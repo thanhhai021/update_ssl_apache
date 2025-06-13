@@ -1,137 +1,151 @@
 #!/bin/bash
 
-# Kiểm tra quyền root
-if [[ $EUID -ne 0 ]]; then
-    echo "[!] Vui lòng chạy script với quyền root."
-    exit 1
-fi
-
-# Cài đặt mod_ssl nếu chưa có
-echo "[+] Cài đặt mod_ssl..."
-if command -v dnf >/dev/null 2>&1; then
-    dnf install -y mod_ssl >/dev/null 2>&1
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y mod_ssl >/dev/null 2>&1
-elif command -v apt >/dev/null 2>&1; then
-    apt update -y && apt install -y apache2 ssl-cert >/dev/null 2>&1
-else
-    echo "[!] Không tìm được công cụ cài đặt phù hợp (dnf/yum/apt)."
-    exit 1
-fi
+# Tắt gõ tiếng Việt bằng cách cảnh báo người dùng
+echo "[!] Vui lòng tắt gõ tiếng Việt khi nhập đường dẫn hoặc domain để tránh lỗi cú pháp."
 
 # Nhập domain
 read -rp "[?] Nhập domain cần cập nhật SSL: " domain
-domain="${domain,,}"  # lowercase
+domain="${domain,,}"  # chuyển về chữ thường
+if [[ -z "$domain" ]]; then
+    echo "[!] Domain không được để trống!"
+    exit 1
+fi
 
-# Tìm file cấu hình .conf
+# Cài mod_ssl nếu chưa có
+if ! apachectl -M 2>/dev/null | grep -q ssl_module; then
+    echo "[+] Cài đặt mod_ssl..."
+    if command -v dnf &>/dev/null; then
+        dnf install -y mod_ssl
+    elif command -v yum &>/dev/null; then
+        yum install -y mod_ssl
+    elif command -v apt &>/dev/null; then
+        apt update && apt install -y ssl-cert libapache2-mod-ssl || a2enmod ssl
+    fi
+fi
+
+# Tìm file config chứa domain
 echo "[+] Tìm file cấu hình Apache chứa domain $domain..."
-conf_file=$(grep -ril "$domain" /etc/httpd/conf.d/*.conf 2>/dev/null || grep -ril "$domain" /etc/apache2/sites-available/*.conf 2>/dev/null)
+conf_file=$(grep -ril "$domain" /etc/httpd/conf.d/*.conf /etc/apache2/sites-available/*.conf 2>/dev/null | head -n1)
 
 if [[ -z "$conf_file" ]]; then
     conf_file="/etc/httpd/conf.d/$domain.conf"
-    echo "[+] Tạo file cấu hình mới: $conf_file"
+    [[ ! -d /etc/httpd/conf.d ]] && conf_file="/etc/apache2/sites-available/$domain.conf"
+    echo "[+] Tạo file cấu hình Apache: $conf_file"
     cat <<EOF > "$conf_file"
 <VirtualHost *:443>
     ServerName $domain
     DocumentRoot /var/www/html
-
     SSLEngine on
-    SSLCertificateFile /etc/ssl/$domain/$domain.crt
-    SSLCertificateKeyFile /etc/ssl/$domain/$domain.key
-    SSLCertificateChainFile /etc/ssl/$domain/$domain.ca-bundle
-
-    <Directory /var/www/html>
-        AllowOverride All
-    </Directory>
+    SSLCertificateFile /etc/ssl/certs/$domain.crt
+    SSLCertificateKeyFile /etc/ssl/private/$domain.key
+    SSLCertificateChainFile /etc/ssl/certs/$domain.ca-bundle
 </VirtualHost>
 EOF
 fi
 
 echo "[+] Đang dùng file cấu hình: $conf_file"
-crt_path=$(grep -i "SSLCertificateFile" "$conf_file" | awk '{print $2}')
-key_path=$(grep -i "SSLCertificateKeyFile" "$conf_file" | awk '{print $2}')
-ca_path=$(grep -i "SSLCertificateChainFile" "$conf_file" | awk '{print $2}')
+
+# Lấy các đường dẫn SSL hiện tại
+crt_path=$(grep -i "SSLCertificateFile" "$conf_file" | awk '{print $2}' | head -n1)
+key_path=$(grep -i "SSLCertificateKeyFile" "$conf_file" | awk '{print $2}' | head -n1)
+ca_path=$(grep -i "SSLCertificateChainFile" "$conf_file" | awk '{print $2}' | head -n1)
+
 echo "[+] Đường dẫn SSL hiện tại:"
 echo "    CRT: $crt_path"
 echo "    KEY: $key_path"
 echo "    CA : $ca_path"
 
-# Nhập thư mục SSL mới
-default_dir=$(dirname "$crt_path")
-read -rp "[?] Nhập đường dẫn thư mục chứa file SSL mới (default: $default_dir): " new_dir
-new_dir="${new_dir:-$default_dir}"
+# Nhập đường dẫn thư mục SSL mới
+read -rp "[?] Nhập đường dẫn thư mục chứa file SSL mới (default: /etc/ssl/certs): " new_dir
+new_dir="${new_dir:-/etc/ssl/certs}"
 new_dir="${new_dir%/}"
 
-# Tìm file SSL mới
+echo "[+] Danh sách file SSL trong $new_dir:"
+ls -lh "$new_dir" | grep -Ei "\.(crt|key|pem|bundle)"
+
+# Xác định file mới
 new_crt=$(find "$new_dir" -iname "$domain.crt" 2>/dev/null | head -n1)
 new_key=$(find "$new_dir" -iname "$domain.key" 2>/dev/null | head -n1)
 new_ca=$(find "$new_dir" -iname "$domain.ca*" -o -iname "*ca-bundle*" 2>/dev/null | head -n1)
 
-# Kiểm tra chuỗi chứng chỉ hợp lệ
-if [[ -f "$new_crt" && -f "$new_key" ]]; then
-    echo "[+] Kiểm tra chuỗi chứng chỉ mới..."
-    if ! openssl x509 -noout -modulus -in "$new_crt" | grep -q "$(openssl rsa -noout -modulus -in "$new_key" 2>/dev/null)"; then
-        echo "[!] CRT và KEY không khớp! Dừng lại."
-        exit 1
-    fi
+# Kiểm tra chuỗi chứng chỉ mới
+echo "[+] Kiểm tra chuỗi chứng chỉ mới..."
+if openssl x509 -noout -modulus -in "$new_crt" 2>/dev/null | grep -q "$(openssl rsa -noout -modulus -in "$new_key" 2>/dev/null | cut -d'=' -f2)"; then
     echo "[+] CRT và KEY hợp lệ."
+else
+    echo "[!] CRT và KEY không khớp. Thoát."
+    exit 1
 fi
 
-# Backup SSL cũ
+# Backup cũ
 timestamp=$(date +%Y%m%d-%H%M%S)
-backup_dir="/etc/ssl/backup/$domain-$timestamp"
+backup_dir="/etc/ssl/backup/${domain}-$timestamp"
 mkdir -p "$backup_dir"
-
 [[ -f "$crt_path" ]] && cp "$crt_path" "$backup_dir/"
 [[ -f "$key_path" ]] && cp "$key_path" "$backup_dir/"
-[[ -f "$ca_path" ]]  && cp "$ca_path"  "$backup_dir/"
+[[ -f "$ca_path" ]] && cp "$ca_path" "$backup_dir/"
 echo "[+] Đã backup SSL cũ vào: $backup_dir"
 
-# Ghi đè nội dung mới
-mkdir -p "$(dirname "$crt_path")"
+# Tạo thư mục nếu chưa có
+mkdir -p "$(dirname "$crt_path")" "$(dirname "$key_path")" "$(dirname "$ca_path")"
 
-if [[ -f "$new_crt" ]]; then
-    if [[ -f "$new_ca" ]]; then
+# Ghi CRT
+if [[ -n "$new_crt" && -s "$new_crt" ]]; then
+    if [[ -n "$new_ca" && -s "$new_ca" ]]; then
         echo "[+] Gộp CRT và CA vào fullchain..."
         cat "$new_crt" "$new_ca" > "$crt_path"
     else
         cp "$new_crt" "$crt_path"
     fi
     echo "[+] Đã cập nhật CRT"
+else
+    echo "[!] Thiếu file CRT mới!"
 fi
 
-if [[ -f "$new_key" ]]; then
+# Ghi KEY
+if [[ -n "$new_key" && -s "$new_key" ]]; then
     cp "$new_key" "$key_path"
     echo "[+] Đã cập nhật KEY"
+else
+    echo "[!] Thiếu file KEY mới!"
 fi
 
-if [[ -f "$new_ca" ]]; then
+# Ghi CA
+if [[ -n "$new_ca" && -s "$new_ca" ]]; then
     cp "$new_ca" "$ca_path"
     echo "[+] Đã cập nhật CA"
 fi
 
 # Đảm bảo có ServerName
-httpd_conf="/etc/httpd/conf/httpd.conf"
-apache2_conf="/etc/apache2/apache2.conf"
-if [[ -f "$httpd_conf" && ! $(grep -q "^ServerName" "$httpd_conf") ]]; then
-    echo "ServerName localhost" >> "$httpd_conf"
-    echo "[+] Đã thêm ServerName localhost vào $httpd_conf"
-elif [[ -f "$apache2_conf" && ! $(grep -q "^ServerName" "$apache2_conf") ]]; then
-    echo "ServerName localhost" >> "$apache2_conf"
-    echo "[+] Đã thêm ServerName localhost vào $apache2_conf"
+apache_main_conf="/etc/httpd/conf/httpd.conf"
+[[ ! -f "$apache_main_conf" ]] && apache_main_conf="/etc/apache2/apache2.conf"
+if ! grep -q "^ServerName" "$apache_main_conf"; then
+    echo "ServerName localhost" >> "$apache_main_conf"
+    echo "[+] Đã thêm ServerName localhost vào $apache_main_conf"
 fi
 
-# Kiểm tra cấu hình trước khi restart
+# Kiểm tra cấu hình Apache
 echo "[+] Kiểm tra lại cấu hình Apache..."
-if apachectl configtest 2>/dev/null | grep -iq "Syntax OK"; then
-    echo "[+] Cấu hình hợp lệ. Đang khởi động lại Apache..."
-    systemctl restart httpd 2>/dev/null || systemctl restart apache2
-    echo "[+] Apache khởi động lại thành công."
+if command -v apache2ctl &>/dev/null; then
+    apache2ctl configtest
+    result=$?
+elif command -v apachectl &>/dev/null; then
+    apachectl configtest
+    result=$?
 else
-    echo "[!] Cấu hình Apache lỗi. Hủy khởi động lại."
+    echo "[!] Không tìm thấy lệnh kiểm tra Apache!"
     exit 1
 fi
 
-# Kiểm tra SSL
+# Nếu OK thì restart
+if [[ "$result" -eq 0 ]]; then
+    echo "[+] Cấu hình hợp lệ. Đang khởi động lại Apache..."
+    systemctl restart apache2 2>/dev/null || systemctl restart httpd
+    echo "[+] Apache khởi động lại thành công."
+else
+    echo "[!] Cấu hình Apache lỗi. Hủy khởi động lại."
+fi
+
+# Kiểm tra SSL cuối cùng
 echo "[+] Kiểm tra SSL bằng openssl:"
 echo | openssl s_client -connect "$domain:443" 2>/dev/null | openssl x509 -noout -subject -issuer
