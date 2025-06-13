@@ -141,3 +141,6 @@ fi
 
 echo "[+] Kiểm tra SSL bằng openssl:"
 echo | openssl s_client -connect "$domain:443" 2>/dev/null | openssl x509 -noout -subject -issuer
+echo "[+] Kiểm tra SSL bằng curl:"
+curl -vI --resolve "$domain:443:127.0.0.1" "https://$domain" 2>&1 | grep -Ei 'subject:|issuer:|expire date|SSL certificate|Server:|HTTP/'
+
