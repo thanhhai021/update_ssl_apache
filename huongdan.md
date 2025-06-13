@@ -1,74 +1,27 @@
-update_SSL_mutil.sh
+# Cập nhật SSL tự động cho Apache trên Linux
 
-Script Bash tự động cập nhật SSL cho domain sử dụng Apache Web Server trên Ubuntu/CentOS.
+Script Bash này giúp **tự động cập nhật chứng chỉ SSL** cho domain sử dụng Apache, hỗ trợ cả hệ điều hành dùng `apt` (Ubuntu, Debian) và `yum`/`dnf` (CentOS, AlmaLinux, RHEL).
 
-🧩 Tính năng:
+---
 
-Tự động cập nhật SSL (CRT, KEY, CA-BUNDLE)
+## 🛠 Chức năng
 
-Tự kiểm tra cấu hình Apache
+- Tìm tự động file cấu hình `.conf` chứa domain
+- Hiển thị và **backup SSL cũ**
+- Gộp CRT + CA bundle thành `fullchain.crt`
+- Ghi đè các file `.crt`, `.key`, `.ca-bundle` hiện có
+- Kiểm tra tính hợp lệ của chuỗi chứng chỉ trước khi áp dụng
+- Kiểm tra `Syntax` cấu hình Apache trước khi restart
+- Hỗ trợ cho `mod_ssl` (tự động cài nếu thiếu)
+- Hiển thị đường dẫn SSL cũ, đường dẫn file mới
+- Cảnh báo khi chưa tắt Unikey (tránh lỗi nhập đường dẫn)
 
-Tự bật các module cần thiết (mod_ssl, mod_rewrite)
+---
 
-Reload Apache nếu không có lỗi
+## 💻 Cách sử dụng
 
-Kiểm tra SSL sau khi cập nhật bằng curl
+### 1. Tải script
 
-📥 Cách sử dụng
-
-1. Tải script về máy:
-
-curl -O https://raw.githubusercontent.com/thanhhai021/update_ssl_apache/refs/heads/main/update_SSL_mutil.sh
-
-2. Cấp quyền thực thi:
-
-chmod +x update_SSL_mutil.sh
-
-3. Chạy script:
-
-./update_SSL_mutil.sh
-
-📌 Quá trình sử dụng:
-
-Nhập domain cần cập nhật SSL (ví dụ: example.com)
-
-Script sẽ tự tìm file cấu hình Apache tương ứng trong /etc/apache2/sites-available/
-
-Hiện thông tin đường dẫn SSL đang sử dụng
-
-Nhập thư mục chứa SSL mới (VD: /root/newssl/)
-
-Script sẽ liệt kê các file có trong thư mục
-
-Tự động cập nhật các file SSL tương ứng
-
-Kiểm tra cấu hình Apache
-
-Nếu không lỗi → Tự động reload Apache
-
-Kiểm tra lại SSL bằng curl và hiện thông tin:
-
-Subject (CN)
-
-Issuer
-
-Ngày bắt đầu và ngày hết hạn
-
-⚠️ Yêu cầu hệ thống:
-
-Apache2
-
-Hệ điều hành Ubuntu/CentOS
-
-Các module Apache: mod_ssl, mod_rewrite
-
-💡 Gợi ý cải tiến:
-
-Tự động kiểm tra chuỗi chứng chỉ hợp lệ
-
-Kiểm tra file cấu hình .conf có đúng chuẩn không trước khi reload
-
-Backup SSL cũ trước khi ghi đè
-
-Tác giả: Thanh Hải
-
+```bash
+wget https://raw.githubusercontent.com/thanhhai021/update_ssl_apache/refs/heads/main/update_SSL_apache.sh
+chmod +x update_SSL_apache.sh
