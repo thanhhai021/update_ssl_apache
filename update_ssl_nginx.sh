@@ -12,35 +12,53 @@ if [[ -z "$domain" ]]; then
     exit 1
 fi
 
-echo "[+] Tìm file cấu hình Nginx chứa domain $domain..."
-conf_file=$(grep -ril "$domain" /etc/nginx/sites-available/*.conf /etc/nginx/conf.d/*.conf 2>/dev/null | head -n1)
+# Xác định thư mục cấu hình
+if [[ -d /etc/nginx/sites-available ]]; then
+    conf_dir="/etc/nginx/sites-available"
+    enabled_dir="/etc/nginx/sites-enabled"
+    conf_file="$conf_dir/$domain.conf"
+    redirect_file="$conf_dir/${domain}_redirect.conf"
+    ln -sf "$conf_file" "$enabled_dir/" || true
+    ln -sf "$redirect_file" "$enabled_dir/" || true
+    # Xóa nếu tồn tại ở conf.d
+    rm -f "/etc/nginx/conf.d/$domain.conf" "/etc/nginx/conf.d/${domain}_redirect.conf"
+else
+    conf_dir="/etc/nginx/conf.d"
+    conf_file="$conf_dir/$domain.conf"
+    redirect_file="$conf_dir/${domain}_redirect.conf"
+fi
 
-if [[ -z "$conf_file" ]]; then
-    conf_file="/etc/nginx/conf.d/$domain.conf"
-    [[ -d /etc/nginx/sites-available ]] && conf_file="/etc/nginx/sites-available/$domain.conf"
-    echo "[+] Không tìm thấy. Tạo file cấu hình mới: $conf_file"
-    mkdir -p "$(dirname "$conf_file")"
+mkdir -p "$conf_dir"
+
+# Tạo file chính nếu chưa có
+if [[ ! -f "$conf_file" ]]; then
+    echo "[+] Tạo file cấu hình chính: $conf_file"
+    mkdir -p "/var/www/$domain"
     cat > "$conf_file" <<EOF
 server {
     listen 443 ssl;
     server_name $domain;
 
-    ssl_certificate     /etc/ssl/certs/$domain.crt;
+    ssl_certificate /etc/ssl/certs/$domain.crt;
     ssl_certificate_key /etc/ssl/private/$domain.key;
     ssl_trusted_certificate /etc/ssl/certs/$domain.ca-bundle;
 
     root /var/www/$domain;
-    index index.html index.php;
+    index index.html index.htm;
 
     location / {
         try_files \$uri \$uri/ =404;
     }
 }
 EOF
+else
+    echo "[+] File cấu hình chính đã tồn tại: $conf_file"
+fi
 
-    redirect_conf="/etc/nginx/conf.d/${domain}_redirect.conf"
-    [[ -d /etc/nginx/sites-available ]] && redirect_conf="/etc/nginx/sites-available/${domain}_redirect.conf"
-    cat > "$redirect_conf" <<EOF
+# Tạo file redirect nếu chưa có
+if [[ ! -f "$redirect_file" ]]; then
+    echo "[+] Tạo file redirect HTTP -> HTTPS: $redirect_file"
+    cat > "$redirect_file" <<EOF
 server {
     listen 80;
     server_name $domain;
@@ -48,36 +66,28 @@ server {
     return 301 https://\$host\$request_uri;
 }
 EOF
-    echo "[+] Đã tạo file redirect HTTP -> HTTPS: $redirect_conf"
 else
-    echo "[+] Đang dùng file cấu hình: $conf_file"
+    echo "[+] File redirect đã tồn tại: $redirect_file"
 fi
 
-crt_path=$(grep -i "ssl_certificate " "$conf_file" | awk '{print $2}' | sed 's/;//' | head -n1)
-key_path=$(grep -i "ssl_certificate_key" "$conf_file" | awk '{print $2}' | sed 's/;//' | head -n1)
-ca_path=$(grep -i "ssl_trusted_certificate" "$conf_file" | awk '{print $2}' | sed 's/;//' | head -n1)
+# Kiểm tra đường dẫn file SSL hiện tại
+crt_path=$(grep -i "ssl_certificate " "$conf_file" | awk '{print $2}' | tr -d ";")
+key_path=$(grep -i "ssl_certificate_key " "$conf_file" | awk '{print $2}' | tr -d ";")
+ca_path=$(grep -i "ssl_trusted_certificate " "$conf_file" | awk '{print $2}' | tr -d ";")
 
-echo "[+] Đường dẫn SSL hiện tại:"
-echo "    CRT: $crt_path"
-echo "    KEY: $key_path"
-echo "    CA : $ca_path"
+echo "[+] Đường dẫn SSL hiện tại:\n    CRT: $crt_path\n    KEY: $key_path\n    CA : $ca_path"
 
-default_ssl_dir="/etc/ssl/certs"
-read -rp "[?] Nhập đường dẫn thư mục chứa file SSL mới (default: $default_ssl_dir): " new_ssl_dir
-new_ssl_dir="${new_ssl_dir:-$default_ssl_dir}"
+read -rp "[?] Nhập đường dẫn chứa SSL mới (default: /etc/ssl/certs): " new_ssl_dir
+new_ssl_dir="${new_ssl_dir:-/etc/ssl/certs}"
 new_ssl_dir="${new_ssl_dir%/}"
 
-echo "[+] Danh sách file SSL trong $new_ssl_dir:"
-ls -1 "$new_ssl_dir" | grep -i "$domain" || echo "    (Không tìm thấy file nào liên quan đến $domain)"
+new_crt=$(find "$new_ssl_dir" -iname "$domain.crt" | head -n1)
+new_key=$(find "$new_ssl_dir" -iname "$domain.key" | head -n1)
+new_ca=$(find "$new_ssl_dir" -iname "$domain.ca*" -o -iname "*ca-bundle*" | head -n1)
 
-new_crt=$(find "$new_ssl_dir" -iname "$domain.crt" 2>/dev/null | head -n1)
-new_key=$(find "$new_ssl_dir" -iname "$domain.key" 2>/dev/null | head -n1)
-new_ca=$(find "$new_ssl_dir" -iname "$domain.ca*" -o -iname "*ca-bundle*" 2>/dev/null | head -n1)
-
-echo "[+] Kiểm tra chuỗi chứng chỉ mới..."
 if [[ -s "$new_crt" && -s "$new_key" ]]; then
-    openssl x509 -noout -modulus -in "$new_crt" > /tmp/crt.mod 2>/dev/null
-    openssl rsa -noout -modulus -in "$new_key" > /tmp/key.mod 2>/dev/null
+    openssl x509 -noout -modulus -in "$new_crt" > /tmp/crt.mod
+    openssl rsa -noout -modulus -in "$new_key" > /tmp/key.mod
     if cmp -s /tmp/crt.mod /tmp/key.mod; then
         echo "[+] CRT và KEY hợp lệ."
     else
@@ -90,38 +100,37 @@ else
     exit 1
 fi
 
+# Backup nếu cần
 timestamp=$(date +%Y%m%d-%H%M%S)
 backup_dir="/etc/ssl/backup/${domain}-$timestamp"
 mkdir -p "$backup_dir"
 [[ -f "$crt_path" ]] && cp "$crt_path" "$backup_dir/"
 [[ -f "$key_path" ]] && cp "$key_path" "$backup_dir/"
 [[ -f "$ca_path" ]] && cp "$ca_path" "$backup_dir/"
-echo "[+] Đã backup SSL cũ vào: $backup_dir"
+echo "[+] Đã backup SSL cũ tại: $backup_dir"
 
+# Cập nhật file SSL
 mkdir -p "$(dirname "$crt_path")" "$(dirname "$key_path")"
 if [[ -n "$new_ca" ]]; then
-    echo "[+] Gộp CRT và CA vào fullchain..."
     cat "$new_crt" "$new_ca" > "$crt_path"
 else
     cp "$new_crt" "$crt_path"
 fi
 cp "$new_key" "$key_path"
-[[ -n "$ca_path" && -n "$new_ca" ]] && cp "$new_ca" "$ca_path"
+[[ -n "$new_ca" && -n "$ca_path" ]] && cp "$new_ca" "$ca_path"
 
-echo "[+] Đã cập nhật CRT"
-echo "[+] Đã cập nhật KEY"
-[[ -n "$new_ca" ]] && echo "[+] Đã cập nhật CA"
+echo "[+] Đã cập nhật SSL"
 
-echo "[+] Kiểm tra lại cấu hình Nginx..."
-if nginx -t 2>&1 | tee /tmp/nginx_test | grep -qi "successful"; then
-    echo "[+] Cấu hình hợp lệ. Đang khởi động lại Nginx..."
-    systemctl restart nginx
-    echo "[+] Nginx khởi động lại thành công."
+# Reload nginx nếu config hợp lệ
+if nginx -t; then
+    echo "[+] Reload Nginx..."
+    systemctl reload nginx
+    echo "[+] Thành công."
 else
-    echo "[!] Cấu hình Nginx lỗi. Hủy khởi động lại."
+    echo "[!] Lỗi cấu hình Nginx. Không reload."
 fi
 
-echo "[+] Kiểm tra SSL bằng openssl:"
-echo | openssl s_client -connect "$domain:443" 2>/dev/null | openssl x509 -noout -subject -issuer
-echo "[+] Kiểm tra SSL bằng curl:"
-curl -vI --resolve "$domain:443:127.0.0.1" "https://$domain" 2>&1 | grep -Ei 'subject:|issuer:|expire date|SSL certificate|Server:|HTTP/'
+# Kiểm tra SSL bằng curl
+sleep 1
+echo "[+] Kiểm tra SSL qua curl"
+curl -vkI --resolve "$domain:443:127.0.0.1" "https://$domain" 2>&1 | grep -Ei 'subject:|issuer:|expire date|SSL certificate|Server:|HTTP/'
